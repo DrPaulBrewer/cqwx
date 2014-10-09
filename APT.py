@@ -1,27 +1,34 @@
-# cqwx.py Copyright 2014 Paul Brewer KI6CQ <drpaulbrewer@gmail.com> 
+#!/usr/bin/python
+'''  cqwx.APT An APT receiver for NOAA Weather Satellites
+
+     Copyright 2014 Paul Brewer KI6CQ
+     License:  GNU General Public License version 3.0
+     License:  http://www.gnu.org/copyleft/gpl.html
+     NO WARRANTY. ALL USE OF THIS CODE IS AT THE SOLE RISK OF THE END USER.
+
+     cqwx.APT is the APT python module for the cqwx python package 
+
+     To use this APT receiver in python code:
+        from cqwx.APT import RX
+        rx = RX('/path/to/NOAA.wav')
+        rx.fine_decode(pngfile='output.png')
+
+     To use this APT receiver from the command line:
+
+     python -m cqwx.APT NOAAaudioIN.wav roughDecode.png fineDecode.png
+    
+         cqwx.APT: literal.  this python module, the cqwx APT Receiver
+         NOAAaudioIN.wav: placeholder for .wav file input
+         roughDecode.png: placeholder for .png file output rough decode
+         fineDecode.png:  placeholder for .png file output fine decode
+
+'''
+# APT.py Copyright 2014 Paul Brewer KI6CQ <drpaulbrewer AT gmail> 
 #
-# CQWX -- A weather satellite data decoder for NOAA APT format
-#
-# License: GNU General Public License v3.0
-# 
-# NO WARRANTY.  ALL USE OF THIS CODE IS AT THE SOLE RISK OF THE END USER.
-#
-# You should have received a copy of the LICENSE with this file.
-# If not, see http://www.gnu.org/copyleft/gpl.html
-#
-# The GNU General Public License v3.0 does NOT permit distributing devices
-# that run this code, unless those devices include full source code that
-# the end user can modify. Required source includes not only this code but 
-# also any code that calls this code.    
-# 
-# For such cases, a commercial LICENSE can be purchased from the author
-# for a reasonable fee.  Contact drpaulbrewer@gmail.com
-#
-# Contributions of code or funding towards improvement of this code
-# are appreciated. 
-#
+# APT -- part of CQWX -- A weather satellite data decoder for NOAA APT format
 #
 import math
+import sys
 import numpy as np
 import scipy.io.wavfile
 import PIL
@@ -47,9 +54,12 @@ def _findPulseConvolve2(data,pulse,maxerr=0):
                         np.convolve(1-data,1-pulse[::-1])
     return 1-len(pulse)+np.where(doubleConvolution>=required)[0]
 
-class APTReceiver:
+class RX:
     
-    """Process .wav files containing NOAA Weather Satellite APT recordings"""
+    """APT Receiver 
+
+    decodes .wav files containing NOAA Weather Satellite audio into PNG files or raw data
+    """
     
     def __init__(self, fname=None, signal = None):
         """Read the .wav file and initialize the receiver
@@ -66,8 +76,11 @@ class APTReceiver:
            a file error occurs
 
         """ 
-        rate = 20800   # we require 5 samples of the signal per APT data byte
-        omega = 2*math.pi*2400.0/rate  # omega = subcarrier phase change per sample
+        self.rate = 20800 
+        # we require 5 samples of the signal per APT data byte
+        # 5 samples/byte*2040 bytes/line*2 APTlines/sec = 20400
+        self.omega = 2*math.pi*2400.0/self.rate  
+        # omega = subcarrier phase change per sample
         if signal is not None:
             self.signal = signal
         else:
@@ -103,7 +116,7 @@ class APTReceiver:
         # do digitization line by line
         # to reduce impact of demodulated noise spikes on digitization
         self.rough_data = np.concatenate(\
-            [self.digitize(ldata) for ldata in np.split(raw, len(raw)/lenNOAAline)]\
+            [self._digitize(ldata) for ldata in np.split(raw, len(raw)/lenNOAAline)]\
         )
 
         if len(self.rough_data.shape)==1:
@@ -148,7 +161,8 @@ class APTReceiver:
         # if pulses show up in odd places, mark line and postprocess
         # the known portions of the signal can then be used to estimate
         # phase and sample jitter
-        As = _findPulseConvolve2(self.rough_data>127,NOAAsyncA,1)
+        hldata = 0+np.ravel(self.rough_data)>127
+        As = _findPulseConvolve2(hldata,NOAAsyncA,1)
         dAs = np.diff(As)
         breaks = (dAs % lenNOAAline) !=0
         triplets = np.concatenate( (As[0:-1], dAs, breaks) )
@@ -162,7 +176,7 @@ class APTReceiver:
                 start = 5*idx+5*k*lenNOAAline
                 end = start+5*lenNOAAline
                 phase = self._findPAS(start,end)[0]
-                line = 255-self.digitize(\
+                line = 255-self._digitize(\
                         self._fine_demod(start,\
                                         end,\
                                         phase)\
@@ -195,7 +209,7 @@ class APTReceiver:
             self.signal[self.signal<min100000]=min100000
 
     def freq_counter(self):
-        return [ np.sum(np.abs(np.diff(np.sign(s-np.mean(s))))/2) \
+        return [ np.sum(np.abs(np.diff(np.sign(s-np.mean(s))))/4) \
                  for s in np.split(self.signal, self.duration) ]
 
     def makePNG(self, fname, datasource):
@@ -211,7 +225,7 @@ class APTReceiver:
         
 
 
-def NOAA_test_signal(minmod=0.05,maxmod=0.95,phase=0,domega=0,e=0,data=None):
+def _NOAA_test_signal(minmod=0.05,maxmod=0.95,phase=0,domega=0,e=0,data=None):
     # D to A = min+(max-min)*d/255.0
     space = np.repeat(255*np.random.random_integers(0,1,1), lenNOAAspace)
     ldata = lenNOAAline-len(lNOAAsyncA)-lenNOAAspace
@@ -226,5 +240,17 @@ def NOAA_test_signal(minmod=0.05,maxmod=0.95,phase=0,domega=0,e=0,data=None):
     signal = modulation*np.cos((omega+domega)*np.arange(5*2040)+phase)+\
         e*np.random.normal(0.0,1.0,5*2040)
     return (signal, linedata)
+
+
+if __name__== "__main__":
+    if len(sys.argv)<3:
+        print __doc__
+    rx = RX(sys.argv[1])
+    if len(sys.argv)>=3:
+        rx.rough_decode(pngfile=sys.argv[2])
+    if len(sys.argv)>=4:
+        rx.fine_decode(pngfile=sys.argv[3])
+
+
 
 
