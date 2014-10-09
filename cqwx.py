@@ -34,14 +34,14 @@ lenNOAAsyncA = len(NOAAsyncA)
 lenNOAAspace = 47
 lenNOAAline = 2080
 
-def G5(x):
+def _G5(x):
     l = len(x)
     clip = 5*int(l/5)
     groupsOf5 = np.copy(x[0:clip])
     groupsOf5.shape=(clip/5,5)
     return groupsOf5
 
-def findPulseConvolve2(data,pulse,maxerr=0):
+def _findPulseConvolve2(data,pulse,maxerr=0):
     required = len(pulse)-maxerr
     doubleConvolution = np.convolve(data,pulse[::-1])+\
                         np.convolve(1-data,1-pulse[::-1])
@@ -49,11 +49,25 @@ def findPulseConvolve2(data,pulse,maxerr=0):
 
 class APTReceiver:
     
-    rate = 20800   # we require 5 samples of the signal per APT data byte
-    omega = 2*math.pi*2400.0/rate  # omega = subcarrier phase change per sample
-
-
+    """Process .wav files containing NOAA Weather Satellite APT recordings"""
+    
     def __init__(self, fname=None, signal = None):
+        """Read the .wav file and initialize the receiver
+        
+        set either fname or signal, not both:
+           fname (string): file name of .wav file
+           signal (array): raw data of signal 
+        
+        .wav files must be recorded with a rate of 20800 samples/sec
+        
+        raises Exception if:
+           neither fname nor signal is set
+           supplied a .wav file is not at rate of 20800 samples/sec
+           a file error occurs
+
+        """ 
+        rate = 20800   # we require 5 samples of the signal per APT data byte
+        omega = 2*math.pi*2400.0/rate  # omega = subcarrier phase change per sample
         if signal is not None:
             self.signal = signal
         else:
@@ -73,26 +87,29 @@ class APTReceiver:
         self.filters = [self._quickpopfilter, self._dcfilter] # set filter order
         self.rough_data = None
 
-    def digitize(self, demodSig, plow=0.5, phigh=99.5):
+    def _digitize(self, demodSig, plow=0.5, phigh=99.5):
         (low, high) = np.percentile(demodSig, (plow, phigh))
         delta = high-low
         data = np.minimum(255, np.round(255*(demodSig-low)/delta))
         return data.astype(np.uint8)
 
-    def rough_demod(self):
-        return np.sqrt(2*np.sum(G5(np.square(self.signal)), axis=1)/5)
+    def _rough_demod(self):
+        return np.sqrt(2*np.sum(_G5(np.square(self.signal)), axis=1)/5)
         
     def rough_decode(self, pngfile=None):
         for f in self.filters:
             f()
-        raw = self.rough_demod()
+        raw = self._rough_demod()
         # do digitization line by line
         # to reduce impact of demodulated noise spikes on digitization
         self.rough_data = np.concatenate(\
             [self.digitize(ldata) for ldata in np.split(raw, len(raw)/lenNOAAline)]\
         )
-        # flatten the data array
-        self.rough_data.shape=len(raw)
+
+        if len(self.rough_data.shape)==1:
+            self.rough_data.shape = \
+                (len(self.rough_data)/lenNOAAline, lenNOAAline)
+
         if pngfile is not None:
             self.makePNG(pngfile, 'rough')
         return self.rough_data
@@ -101,7 +118,7 @@ class APTReceiver:
         # global lenNOAAsyncA, lenNOAAspace, omega
         offset = 5*lenNOAAsyncA
         length = 5*lenNOAAspace
-        demodAM = self.fine_demod
+        demodAM = self._fine_demod
         if (end-start) < (offset+length):
             raise(Exception("findPAS: signal is of insufficient length"))
         M = [ np.mean(demodAM(start+offset,start+offset+length,phase)) \
@@ -111,16 +128,16 @@ class APTReceiver:
         phase = ( phaseAtOffset - self.omega*offset ) % (2*math.pi)
         return (phase, amplitude, np.std(demodAM(start+offset,start+offset+length,phaseAtOffset)))
 
-    def fine_demod(self, start, end, phase):
+    def _fine_demod(self, start, end, phase):
         sIN = self.signal[start:end]
         # global omega
         l = len(sIN)
         adj = l%5
         s = np.copy(sIN[0:(l-adj)])
         g = np.cos(np.arange(len(s))*self.omega+phase)
-        g25 = G5(g*g)
+        g25 = _G5(g*g)
         invsumsq = np.repeat(np.reciprocal(np.sum(g25, axis=1)), 5)
-        out = np.maximum(0, np.sum(G5(invsumsq*g*s), axis=1))
+        out = np.maximum(0, np.sum(_G5(invsumsq*g*s), axis=1))
         return out
         
     def fine_decode(self, repair=True, dejitter=False, pngfile=None):
@@ -131,7 +148,7 @@ class APTReceiver:
         # if pulses show up in odd places, mark line and postprocess
         # the known portions of the signal can then be used to estimate
         # phase and sample jitter
-        As = findPulseConvolve2(self.rough_data>127,NOAAsyncA,1)
+        As = _findPulseConvolve2(self.rough_data>127,NOAAsyncA,1)
         dAs = np.diff(As)
         breaks = (dAs % lenNOAAline) !=0
         triplets = np.concatenate( (As[0:-1], dAs, breaks) )
@@ -146,7 +163,7 @@ class APTReceiver:
                 end = start+5*lenNOAAline
                 phase = self._findPAS(start,end)[0]
                 line = 255-self.digitize(\
-                        self.fine_demod(start,\
+                        self._fine_demod(start,\
                                         end,\
                                         phase)\
                     )
@@ -185,7 +202,6 @@ class APTReceiver:
         data = None
         if datasource == 'rough':
             data = np.copy(self.rough_data)
-            data.shape = (len(data)/lenNOAAline, lenNOAAline)
         if datasource == 'fine':
             data = np.copy(self.fine_data)
         if data is None:
