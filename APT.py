@@ -42,6 +42,7 @@ lenNOAAspace = 47
 lenNOAAline = 2080
 
 def _G5(x):
+    """return copy of x as (len(x)/5) x 5 array, truncating remainder"""
     l = len(x)
     clip = 5*int(l/5)
     groupsOf5 = np.copy(x[0:clip])
@@ -49,6 +50,10 @@ def _G5(x):
     return groupsOf5
 
 def _findPulseConvolve2(data,pulse,maxerr=0):
+    """return indexes of locations of binary pulse in binary data
+       data: binary 0-1 array of data to be searched
+       pulse: binary 0-1 array
+       maxerr: (optional) number of errors permitted"""
     required = len(pulse)-maxerr
     doubleConvolution = np.convolve(data,pulse[::-1])+\
                         np.convolve(1-data,1-pulse[::-1])
@@ -101,22 +106,66 @@ class RX:
         self.rough_data = None
 
     def _digitize(self, demodSig, plow=0.5, phigh=99.5):
+        """ return 8 bit unsigned (0-255) digitized version of demodSig
+        
+        demodSig: signal input
+        plow: percentile of demodSig to be asssigned 0 value
+        phigh: percentile of demodSig to be assigned 255 value
+        """
         (low, high) = np.percentile(demodSig, (plow, phigh))
         delta = high-low
         data = np.minimum(255, np.round(255*(demodSig-low)/delta))
         return data.astype(np.uint8)
 
     def _rough_demod(self):
+        """ return root-mean-square demodulated signal
+
+        requires no knowledge of the phase of the signal, location of sync
+        pulses, etc.
+        
+        self.signal: input signal
+
+        rms demodulator implementation summary
+        -----------
+        The input signal is grouped into groups of 5 samples.
+        The sum of squares of each group of 5 samples is calculated
+        This sum is multiplied by 2/5 and the square root returned.
+        
+        no side effects to self
+        
+        rms demodulator Theory Of Operation
+        -------------------
+        The rms demodulation method is roughly applicable to the NOAA APT
+        data AM modulated in the carrier tone. As omega is about 41 degrees
+        per sample, a group of 5 samples encompasses 205 degrees or about
+        half a wave.  Squaring the samples amd summing has undesirable effects
+        of summing squared noise, and also creating additional noise at 
+        twice omega, but that is summing over roughly an entire wave, and an 
+        entire wave usually sums neat zero.
+        
+        """
         return np.sqrt(2*np.sum(_G5(np.square(self.signal)), axis=1)/5)
         
     def rough_decode(self, pngfile=None):
+        """ decode self.signal, create/return satellite image data
+        
+        image data will be created in self.rough_data
+
+        pngfile: (optional) file name to output decoded PNG image from satellite
+        
+        The internal demodulator for this step is self._rough_demod.
+        The self.signal is demodulated in chunks corresponding
+        to a NOAA line length.  Each demodulated chunk is then digitized
+        separately, localizing the effects of noise spikes.
+        """
+        
         for f in self.filters:
             f()
         raw = self._rough_demod()
         # do digitization line by line
         # to reduce impact of demodulated noise spikes on digitization
         self.rough_data = np.concatenate(\
-            [self._digitize(ldata) for ldata in np.split(raw, len(raw)/lenNOAAline)]\
+            [self._digitize(ldata) for ldata in np.split(raw, len(raw)/(5*lenNOAAline))]\
         )
 
         if len(self.rough_data.shape)==1:
@@ -128,7 +177,20 @@ class RX:
         return self.rough_data
 
     def _findPAS(self, start, end):
-        # global lenNOAAsyncA, lenNOAAspace, omega
+        """return (estimate of phase, amplitude, standard error of amplitude)
+        
+        start: index to start of NOAA data line in self.signal
+        end: index to end of NOAA data line in self.signal
+ 
+        For proper operation, start must point to the signal index at the
+        beginning of a line of data, i.e. at the beginning of a syncA pulse.  
+       
+        Determine the phase of the NOAA APT 2400 hz carrier tone using a
+        portion of tbe signal called SPACE A.  SPACE A modulates the carrier
+        at a constant level corresponding to white or black.  
+       
+        """
+        
         offset = 5*lenNOAAsyncA
         length = 5*lenNOAAspace
         demodAM = self._fine_demod
@@ -142,8 +204,15 @@ class RX:
         return (phase, amplitude, np.std(demodAM(start+offset,start+offset+length,phaseAtOffset)))
 
     def _fine_demod(self, start, end, phase):
+        """ least squares demodulation of signal against reference signal
+        
+        input signal to demodulator is self.signal[start:end]
+        start: index where demodulation begins
+        end:  index where demodulatione ends
+        phase: phase of 2400 Hz reference carrier to apply at self.signal[start]
+        
+        """
         sIN = self.signal[start:end]
-        # global omega
         l = len(sIN)
         adj = l%5
         s = np.copy(sIN[0:(l-adj)])
@@ -154,6 +223,24 @@ class RX:
         return out
         
     def fine_decode(self, repair=True, dejitter=False, pngfile=None):
+        """ 
+        extensive decoding of self.signal beginning with finding the 
+        sync pulse in self.rough_data and using the pulse locations to
+        guide the estimation of signal phase and demodulation with a 
+        least-squares method in self._fine_demod
+        
+        creates self.fine_data containing satellite image data and returns
+        data to caller.  Generates pngfile on request.
+                
+        rows of self.fine_data are synchronized to satellite sync-A pulses
+        
+        repair: (True) replace missing/mis-synced line with average of lines above and below
+        dejitter: (False) test and correct for misalignment of signal samples 
+        once at each line, using goodness-of-fit of sync pulses (TO DO)
+        
+        pngfile: (optional) file name to output decoded PNG image from satellite
+        
+        """
         if self.rough_data is None:
             self.rough_decode()
         # use rough data to find syncA pulses 
@@ -196,12 +283,22 @@ class RX:
 
 
     def _dcfilter(self):
+        """modify self.signal to filter out DC-1Hz
+        subtracts mean from each one second grouping of self.signal
+                
+        return 1Hz DC observations 
+        
+        """
         oneSecondDC = np.fromiter( (np.mean(s) for s in np.split(self.signal, self.duration)), np.float)
         self.signal = self.signal - np.repeat(oneSecondDC,self.rate)
         self.DC = oneSecondDC
         return self.DC
 
     def _quickpopfilter(self):
+        """modify self.signal to filter out large positive/negative values
+        
+        clips the entire self.signal to the max and min of first 100,000 samples 
+        """
         if len(self.signal) > 100000:
             max100000 = max(self.signal[0:100000])
             self.signal[self.signal>max100000]=max100000
@@ -209,10 +306,22 @@ class RX:
             self.signal[self.signal<min100000]=min100000
 
     def freq_counter(self):
+        """return one-second estimates of freq of self.signal
+        uses zero-crossings method
+        
+        Should approach 2400 Hz in strong signal to noise environment.
+        """
         return [ np.sum(np.abs(np.diff(np.sign(s-np.mean(s))))/4) \
                  for s in np.split(self.signal, self.duration) ]
 
     def makePNG(self, fname, datasource):
+        """create PNG file from decoded satellite image data
+        
+        fname:  file name to use in creating the png file.
+        datasource:  'rough' -- use self.rough_data for image
+                     'fine'  -- use self.fine_data for image
+        
+        """
         data = None
         if datasource == 'rough':
             data = np.copy(self.rough_data)
@@ -226,7 +335,21 @@ class RX:
 
 
 def _NOAA_test_signal(minmod=0.05,maxmod=0.95,phase=0,domega=0,e=0,data=None):
-    # D to A = min+(max-min)*d/255.0
+    """return simulated NOAA signal with syncA pulse, space, and random data
+    
+    return length is 10200 byytes, equivalent to one NOAA line
+    
+    does not simulate syncB, spaceB, or telemetry bars.
+    
+    minmod: (0.05) minimum modulation level of 2400 hz carrier
+    maxmod: (0.95) maximum modulation level of 2400 hz carrier
+    phase: (0.0) phase of 2400 hz carrier at beginning of line
+    domega: (0.0) difference in omega representing off-frequency carrier
+    e: (0.0) standard deviation (signma) of Gaussian noise
+    data: (if data is None) default to generating random data
+          data may be specified for the non-syncA, non-space content
+    
+    """
     space = np.repeat(255*np.random.random_integers(0,1,1), lenNOAAspace)
     ldata = lenNOAAline-len(lNOAAsyncA)-lenNOAAspace
     if data is None:
