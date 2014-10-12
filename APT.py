@@ -169,6 +169,24 @@ class RX:
              for ldata in np.split(raw, len(raw)/lenNOAAline)]\
         )
 
+        hldata = 0+np.ravel(self.rough_data>127)
+        self.As = _findPulseConvolve2(hldata,NOAAsyncA,1)
+        self.A0 = None
+
+        if len(self.As)>3:
+            # if there are at least 3 syncAs
+            # then calculate self.dAs, self.breaks, self.A0
+            # and clip signal and rough_data to self.A0
+            # sacrificing a portion of the final sec of data
+            # to preserve full second alignment
+            self.dAs = np.diff(self.As)
+            self.breaks = (self.dAs % lenNOAAline) !=0        
+            self.A0 = self.As[0] % lenNOAAline
+            self.As = self.As - self.A0
+            self.duration = self.duration - 1
+            self.signal = self.signal[(5*self.A0):(5*self.A0+self.rate*self.duration)]
+            self.rough_data = self.rough_data[self.A0:(-2*lenNOAAline+self.A0)]
+
         if len(self.rough_data.shape)==1:
             self.rough_data.shape = \
                 (len(self.rough_data)/lenNOAAline, lenNOAAline)
@@ -204,6 +222,21 @@ class RX:
         phase = ( phaseAtOffset - self.omega*offset ) % (2*math.pi)
         return (phase, amplitude, np.std(demodAM(start+offset,start+offset+length,phaseAtOffset)))
 
+    def _findJPA(self, start, end):
+        demodAM = self._fine_demod
+        j0 = 0
+        j1 = 0
+        if start>2:
+            j0=-2
+        if (end+2)<len(self.signal):
+            j1=2
+        J = j0 + np.arange(1+j1-j0)
+        PAS = [ self._findPAS(start+j,end+j) for j in J]
+        V = [ np.var(demodAM(start+j, start+j+5*lenNOAAsyncA, PAS[i][0])) \
+              for (i,j) in enumerate(J) ]
+        argmaxV = np.argmax(V)
+        return (J[argmaxV], PAS[argmaxV][0], PAS[argmaxV][1])
+
     def _fine_demod(self, start, end, phase):
         """ least squares demodulation of signal against reference signal
         
@@ -223,7 +256,7 @@ class RX:
         out = np.maximum(0, np.sum(_G5(invsumsq*g*s), axis=1))
         return out
         
-    def fine_decode(self, repair=True, dejitter=False, pngfile=None):
+    def fine_decode(self, repair=True, dejitter=True, pngfile=None):
         """ 
         extensive decoding of self.signal beginning with finding the 
         sync pulse in self.rough_data and using the pulse locations to
@@ -249,24 +282,22 @@ class RX:
         # if pulses show up in odd places, mark line and postprocess
         # the known portions of the signal can then be used to estimate
         # phase and sample jitter
-        hldata = 0+np.ravel(self.rough_data)>127
-        self.As = _findPulseConvolve2(hldata,NOAAsyncA,1)
-        self.dAs = np.diff(self.As)
-        self.breaks = (self.dAs % lenNOAAline) !=0
         triplets = np.concatenate( (self.As[0:-1], self.dAs, self.breaks) )
         triplets.shape=(3, len(self.dAs))
         lineData = []
         skipIdx = []
-        if dejitter is True:
-            raise Exception("Fatal: dejitter=True: no dejitter code yet")
         for (idx, delta, skipline) in triplets.T:
             for k in range(0,delta/lenNOAAline):
                 start = 5*idx+5*k*lenNOAAline
                 end = start+5*lenNOAAline
-                phase = self._findPAS(start,end)[0]
+                if dejitter:
+                    (jitter, phase, amp)  = self._findJPA(start,end)
+                else:
+                    jitter = 0
+                    (phase, amp, sdev) = self._findPAS(start,end)
                 line = 255-self._digitize(\
-                        self._fine_demod(start,\
-                                        end,\
+                        self._fine_demod(start+jitter,\
+                                        end+jitter,\
                                         phase)\
                     )
                 lineData.append(line)
