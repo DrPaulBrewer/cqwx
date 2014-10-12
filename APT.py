@@ -165,7 +165,8 @@ class RX:
         # do digitization line by line
         # to reduce impact of demodulated noise spikes on digitization
         self.rough_data = np.concatenate(\
-            [self._digitize(ldata) for ldata in np.split(raw, len(raw)/(5*lenNOAAline))]\
+            [self._digitize(ldata) \
+             for ldata in np.split(raw, len(raw)/lenNOAAline)]\
         )
 
         if len(self.rough_data.shape)==1:
