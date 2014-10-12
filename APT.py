@@ -250,11 +250,11 @@ class RX:
         # the known portions of the signal can then be used to estimate
         # phase and sample jitter
         hldata = 0+np.ravel(self.rough_data)>127
-        As = _findPulseConvolve2(hldata,NOAAsyncA,1)
-        dAs = np.diff(As)
-        breaks = (dAs % lenNOAAline) !=0
-        triplets = np.concatenate( (As[0:-1], dAs, breaks) )
-        triplets.shape=(3, len(dAs))
+        self.As = _findPulseConvolve2(hldata,NOAAsyncA,1)
+        self.dAs = np.diff(self.As)
+        self.breaks = (self.dAs % lenNOAAline) !=0
+        triplets = np.concatenate( (self.As[0:-1], self.dAs, self.breaks) )
+        triplets.shape=(3, len(self.dAs))
         lineData = []
         skipIdx = []
         if dejitter is True:
