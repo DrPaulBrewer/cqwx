@@ -217,10 +217,9 @@ class RX:
             raise(Exception("findPAS: signal is of insufficient length"))
         M = [ np.mean(demodAM(start+offset,start+offset+length,phase)) \
                   for phase in -3.14+0.01*np.arange(628) ]
-        phaseAtOffset = -3.14+0.01*np.argmax(M)
+        phase = -3.14+0.01*np.argmax(M)
         amplitude = np.max(M)
-        phase = ( phaseAtOffset - self.omega*offset ) % (2*math.pi)
-        return (phase, amplitude, np.std(demodAM(start+offset,start+offset+length,phaseAtOffset)))
+        return (phase, amplitude, np.std(demodAM(start+offset,start+offset+length,phase)))
 
     def _findJPA(self, start, end):
         demodAM = self._fine_demod
@@ -243,14 +242,14 @@ class RX:
         input signal to demodulator is self.signal[start:end]
         start: index where demodulation begins
         end:  index where demodulatione ends
-        phase: phase of 2400 Hz reference carrier to apply at self.signal[start]
+        phase: phase of 2400 Hz reference carrier to apply at self.signal[0]
         
         """
         sIN = self.signal[start:end]
         l = len(sIN)
         adj = l%5
         s = np.copy(sIN[0:(l-adj)])
-        g = np.cos(np.arange(len(s))*self.omega+phase)
+        g = np.cos((start+np.arange(len(s)))*self.omega+phase)
         g25 = _G5(g*g)
         invsumsq = np.repeat(np.reciprocal(np.sum(g25, axis=1)), 5)
         out = np.maximum(0, np.sum(_G5(invsumsq*g*s), axis=1))
@@ -263,10 +262,16 @@ class RX:
         guide the estimation of signal phase and demodulation with a 
         least-squares method in self._fine_demod
         
-        creates self.fine_data containing satellite image data and returns
-        data to caller.  Generates pngfile on request.
+        create self.fine_data containing satellite image data and returns
+        data to caller.  Generate pngfile if requested.
                 
         rows of self.fine_data are synchronized to satellite sync-A pulses
+
+        create diagnostic arrays with one entry per decoded data line:
+           self.fine_demod_phase:  phase of 2400hz carrier, from space A
+               The reference time of this phase is self.signal[0]
+           self.fine_demod_jitter: if dejitter, the index offset, else 0
+           self.fine_demod_amp:  mean amplitude of the carrier in space A
         
         repair: (True) replace missing/mis-synced line with average of lines above and below
         dejitter: (False) test and correct for misalignment of signal samples 
@@ -277,15 +282,18 @@ class RX:
         """
         if self.rough_data is None:
             self.rough_decode()
-        # use rough data to find syncA pulses 
-        # and align fine demodulation efforts around these pulses
-        # if pulses show up in odd places, mark line and postprocess
-        # the known portions of the signal can then be used to estimate
-        # phase and sample jitter
+        # Use rough data to find syncA pulses 
+        # and align fine demodulation efforts around these pulses.
+        # If pulses show up in odd places, mark line and postprocess.
+        # The known portions of the signal (syncA, spaceA) are used to estimate
+        # phase and sample jitter for the demodulator.
         triplets = np.concatenate( (self.As[0:-1], self.dAs, self.breaks) )
         triplets.shape=(3, len(self.dAs))
         lineData = []
         skipIdx = []
+        self.fine_demod_jitter = []
+        self.fine_demod_phase = []
+        self.fine_demod_space_amp = []
         for (idx, delta, skipline) in triplets.T:
             for k in range(0,delta/lenNOAAline):
                 start = 5*idx+5*k*lenNOAAline
@@ -295,6 +303,9 @@ class RX:
                 else:
                     jitter = 0
                     (phase, amp, sdev) = self._findPAS(start,end)
+                self.fine_demod_jitter.append(jitter)
+                self.fine_demod_phase.append(phase)
+                self.fine_demod_space_amp.append(amp)
                 line = 255-self._digitize(\
                         self._fine_demod(start+jitter,\
                                         end+jitter,\
