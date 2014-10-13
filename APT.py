@@ -254,8 +254,19 @@ class RX:
         invsumsq = np.repeat(np.reciprocal(np.sum(g25, axis=1)), 5)
         out = np.maximum(0, np.sum(_G5(invsumsq*g*s), axis=1))
         return out
+
+    def _residual(self, start, end, phase, demod):
+        """ determine residual signal from demod amplitudes and phase
         
-    def fine_decode(self, repair=True, dejitter=True, pngfile=None):
+        input signals are self.signal[start:end] and
+        a signal synthesiszed from demod, phase
+        """
+        l = end-start
+        local_osc = np.cos((start+np.arange(l))*self.omega+phase)
+        synth = local_osc*np.repeat(demod,5)
+        return self.signal[start:end]-synth
+        
+    def fine_decode(self, repair=True, dejitter=True, pngfile=None, residuals=False):
         """ 
         extensive decoding of self.signal beginning with finding the 
         sync pulse in self.rough_data and using the pulse locations to
@@ -294,6 +305,10 @@ class RX:
         self.fine_demod_jitter = []
         self.fine_demod_phase = []
         self.fine_demod_space_amp = []
+        if residuals:
+            self.residuals = []
+        else:
+            self.residuals = None
         for (idx, delta, skipline) in triplets.T:
             for k in range(0,delta/lenNOAAline):
                 start = 5*idx+5*k*lenNOAAline
@@ -306,11 +321,15 @@ class RX:
                 self.fine_demod_jitter.append(jitter)
                 self.fine_demod_phase.append(phase)
                 self.fine_demod_space_amp.append(amp)
-                line = 255-self._digitize(\
-                        self._fine_demod(start+jitter,\
+                raw = self._fine_demod(start+jitter,\
                                         end+jitter,\
-                                        phase)\
-                    )
+                                        phase)
+                if residuals:
+                    self.residuals.append(self._residual(start+jitter,\
+                                                         end+jitter,\
+                                                         phase,\
+                                                         raw))
+                line = 255-self._digitize(raw)
                 lineData.append(line)
             if skipline:
                 lineData.append(127+np.zeros(lenNOAAline, dtype='uint8'))
@@ -322,6 +341,12 @@ class RX:
         self.fine_data = np.array(lineData)
         if pngfile is not None:
             self.makePNG(pngfile, 'fine')
+        if type(residuals)==type('string'):
+            r = np.array(self.residuals)
+            r.shape = r.shape[0]*r.shape[1]
+            scipy.io.wavfile.write(residuals,\
+                                   self.rate,\
+                                   np.round(r).astype('int16'))
         return self.fine_data
 
 
