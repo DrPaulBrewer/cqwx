@@ -282,7 +282,7 @@ class RX:
            self.fine_demod_phase:  phase of 2400hz carrier, from space A
                The reference time of this phase is self.signal[0]
            self.fine_demod_jitter: if dejitter, the index offset, else 0
-           self.fine_demod_amp:  mean amplitude of the carrier in space A
+           self.fine_demod_space_amp:  mean amplitude of the carrier in space A
         
         repair: (True) replace missing/mis-synced line with average of lines above and below
         dejitter: (False) test and correct for misalignment of signal samples 
