@@ -141,7 +141,7 @@ class RX:
         half a wave.  Squaring the samples amd summing has undesirable effects
         of summing squared noise, and also creating additional noise at 
         twice omega, but that is summing over roughly an entire wave, and an 
-        entire wave usually sums neat zero.
+        entire wave usually sums near zero.
         
         """
         return np.sqrt(2*np.sum(_G5(np.square(self.signal)), axis=1)/5)
@@ -386,8 +386,10 @@ class RX:
         """create PNG file from decoded satellite image data
         
         fname:  file name to use in creating the png file.
+        datasource:  either a STRING or a numpy array containing the image
         datasource:  'rough' -- use self.rough_data for image
                      'fine'  -- use self.fine_data for image
+        
         
         """
         data = None
