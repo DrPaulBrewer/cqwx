@@ -391,12 +391,15 @@ class RX:
         
         """
         data = None
-        if datasource == 'rough':
-            data = np.copy(self.rough_data)
-        if datasource == 'fine':
-            data = np.copy(self.fine_data)
+        if isinstance(datasource, str):
+            if datasource == 'rough':
+                data = np.copy(self.rough_data)
+            if datasource == 'fine':
+                data = np.copy(self.fine_data)
+        if isinstance(datasource, np.ndarray):
+            data = datasource
         if data is None:
-            raise Exception("Fatal: makePNG requires datasource='fine' or 'rough'")
+            raise Exception("Fatal: makePNG requires datasource='fine' or 'rough' or numpy array")
         im = PIL.Image.fromarray(data)
         im.save(fname,'PNG')
         
