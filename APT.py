@@ -41,6 +41,16 @@ lenNOAAsyncA = len(NOAAsyncA)
 lenNOAAspace = 47
 lenNOAAline = 2080
 
+def _fitAssq(data):
+    """ return sum of square residuals of data vs syncA and space data
+        
+    """
+    dataFromSyncA = data[0:lenNOAAsyncA]
+    dataFromSpaceA = data[lenNOAAsyncA:(lenNOAAsyncA+lenNOAAspace)]
+    ssq = np.sum(np.square(dataFromSyncA-lNOAAsyncA))+\
+              lenNOAAspace*np.var(dataFromSpaceA)
+    return ssq
+
 def _G5(x):
     """return copy of x as (len(x)/5) x 5 array, truncating remainder"""
     l = len(x)
@@ -114,15 +124,14 @@ class RX:
         """
         (low, high) = np.percentile(demodSig, (plow, phigh))
         delta = high-low
-        data = np.minimum(255, np.round(255*(demodSig-low)/delta))
+        data = np.round(255*(demodSig-low)/delta)
+        data[data<0]=0
+        data[data>255]=255
         return data.astype(np.uint8)
 
-    def _rough_demod(self):
+    def _demodAM(self, start=None, end=None, phase=None, denoise=False):
         """ return root-mean-square demodulated signal
 
-        requires no knowledge of the phase of the signal, location of sync
-        pulses, etc.
-        
         self.signal: input signal
 
         rms demodulator implementation summary
@@ -144,8 +153,25 @@ class RX:
         entire wave usually sums near zero.
         
         """
-        return np.sqrt(2*np.sum(_G5(np.square(self.signal)), axis=1)/5)
-        
+        denoiseAmt = 0.0
+        if start is None:
+            start = 0
+        if end is None:
+            end = len(self.signal)
+        ssq = np.sum(_G5(np.square(self.signal[start:end])), axis=1)
+        if denoise is True:
+            denoiseAmt = np.min(ssq)
+            ssq -= denoiseAmt
+        if phase is None:
+            demod = np.sqrt(0.4*ssq)
+        else:
+            sqcos = np.square(np.cos(\
+                (start+np.arange(end-start))*self.omega+phase\
+                                 ))
+            divisor = np.sum(_G5(sqcos), axis=1)
+            demod =  np.sqrt(np.divide(ssq, divisor))
+        return demod
+
     def rough_decode(self, pngfile=None):
         """ decode self.signal, create/return satellite image data
         
@@ -161,7 +187,7 @@ class RX:
         
         for f in self.filters:
             f()
-        raw = self._rough_demod()
+        raw = self._demodAM()
         # do digitization line by line
         # to reduce impact of demodulated noise spikes on digitization
         self.rough_data = np.concatenate(\
@@ -195,8 +221,17 @@ class RX:
             self.makePNG(pngfile, 'rough')
         return self.rough_data
 
-    def _findPAS(self, start, end):
-        """return (estimate of phase, amplitude, standard error of amplitude)
+    def _ssqA(self, start, phase=None, denoise=True):
+        length = 5*(lenNOAAsyncA+lenNOAAspace)
+        raw = self._demodAM(start,\
+                            start+length,\
+                            phase,\
+                            denoise)
+        data = self._digitize(raw)
+        return _fitAssq(data)
+
+    def _findPhase(self, start):
+        """return estimate of phase
         
         start: index to start of NOAA data line in self.signal
         end: index to end of NOAA data line in self.signal
@@ -204,56 +239,35 @@ class RX:
         For proper operation, start must point to the signal index at the
         beginning of a line of data, i.e. at the beginning of a syncA pulse.  
        
-        Determine the phase of the NOAA APT 2400 hz carrier tone using a
-        portion of tbe signal called SPACE A.  SPACE A modulates the carrier
+        Determine the phase of the NOAA APT 2400 hz carrier tone using the
+        portions of tbe signal called SYNC A and SPACE A. 
+
+        SYNC A is a specific repeating high-low pulse
+ 
+        SPACE A modulates the carrier
         at a constant level corresponding to white or black.  
        
         """
-        
-        offset = 5*lenNOAAsyncA
-        length = 5*lenNOAAspace
-        demodAM = self._fine_demod
-        if (end-start) < (offset+length):
-            raise(Exception("findPAS: signal is of insufficient length"))
-        M = [ np.mean(demodAM(start+offset,start+offset+length,phase)) \
-                  for phase in -3.14+0.01*np.arange(628) ]
-        phase = -3.14+0.01*np.argmax(M)
-        amplitude = np.max(M)
-        return (phase, amplitude, np.std(demodAM(start+offset,start+offset+length,phase)))
+        length = 5*(lenNOAAsyncA+lenNOAAspace)
+        if (len(self.signal)-start) < length:
+            raise(Exception("findPhase: signal is of insufficient length"))
+        M = [ self._ssqA(start, phase) for phase in -3.14+0.01*np.arange(628) ]
+        phase = -3.14+0.01*np.argmin(M)
+        return phase
 
-    def _findJPA(self, start, end):
-        demodAM = self._fine_demod
+    def _findJitterPhase(self, start):
         j0 = 0
         j1 = 0
+        end = start+5*lenNOAAsyncA+5*lenNOAAspace
         if start>2:
             j0=-2
         if (end+2)<len(self.signal):
             j1=2
         J = j0 + np.arange(1+j1-j0)
-        PAS = [ self._findPAS(start+j,end+j) for j in J]
-        V = [ np.var(demodAM(start+j, start+j+5*lenNOAAsyncA, PAS[i][0])) \
-              for (i,j) in enumerate(J) ]
-        argmaxV = np.argmax(V)
-        return (J[argmaxV], PAS[argmaxV][0], PAS[argmaxV][1])
-
-    def _fine_demod(self, start, end, phase):
-        """ least squares demodulation of signal against reference signal
-        
-        input signal to demodulator is self.signal[start:end]
-        start: index where demodulation begins
-        end:  index where demodulatione ends
-        phase: phase of 2400 Hz reference carrier to apply at self.signal[0]
-        
-        """
-        sIN = self.signal[start:end]
-        l = len(sIN)
-        adj = l%5
-        s = np.copy(sIN[0:(l-adj)])
-        g = np.cos((start+np.arange(len(s)))*self.omega+phase)
-        g25 = _G5(g*g)
-        invsumsq = np.repeat(np.reciprocal(np.sum(g25, axis=1)), 5)
-        out = np.maximum(0, np.sum(_G5(invsumsq*g*s), axis=1))
-        return out
+        Phases = [ self._findPhase(start+j) for j in J]
+        ssq = [ self._ssqA(start+j, Phases[i]) for (i,j) in enumerate(J) ]
+        argminssq = np.argmin(ssq)
+        return (J[argminssq], Phases[argminssq])
 
     def _residual(self, start, end, phase, demod):
         """ determine residual signal from demod amplitudes and phase
@@ -304,7 +318,6 @@ class RX:
         skipIdx = []
         self.fine_demod_jitter = []
         self.fine_demod_phase = []
-        self.fine_demod_space_amp = []
         if residuals:
             self.residuals = []
         else:
@@ -314,16 +327,16 @@ class RX:
                 start = 5*idx+5*k*lenNOAAline
                 end = start+5*lenNOAAline
                 if dejitter:
-                    (jitter, phase, amp)  = self._findJPA(start,end)
+                    (jitter, phase)  = self._findJitterPhase(start)
                 else:
                     jitter = 0
-                    (phase, amp, sdev) = self._findPAS(start,end)
+                    phase = self._findPhase(start)
                 self.fine_demod_jitter.append(jitter)
                 self.fine_demod_phase.append(phase)
-                self.fine_demod_space_amp.append(amp)
-                raw = self._fine_demod(start+jitter,\
+                raw = self._demodAM(start+jitter,\
                                         end+jitter,\
-                                        phase)
+                                        phase,\
+                                    denoise=True)
                 if residuals:
                     self.residuals.append(self._residual(start+jitter,\
                                                          end+jitter,\
