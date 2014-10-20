@@ -347,7 +347,7 @@ class RX:
                                                          end+jitter,\
                                                          phase,\
                                                          raw))
-                line = 255-self._digitize(raw)
+                line = self._digitize(raw)
                 lineData.append(line)
             if skipline:
                 lineData.append(127+np.zeros(lenNOAAline, dtype='uint8'))
