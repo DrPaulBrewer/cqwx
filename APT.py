@@ -45,6 +45,24 @@ lenNOAAtelemetry = 45
 lenNOAAchannel = 1040
 lenNOAAline = 2080
 
+def _lineTelemetry(data):
+    """ return mean and sdev of telemetry portions of single line data
+    
+    if len(data)==lenNOAAline (2080), return (Amean,Asdev,Bmean,Bsdev)
+
+    if len(data)==lenNOAAchannel (1040), return (mean, sdev)
+
+    """
+    if len(data)==lenNOAAline:
+        Adata = data[(lenNOAAchannel-lenNOAAtelemetry):lenNOAAchannel]
+        Bdata =  data[(lenNOAAline-lenNOAAtelemetry):lenNOAAline]
+        return (np.mean(Adata),np.std(Adata),np.mean(Bdata),np.std(Bdata))
+    if len(data)==lenNOAAchannel:
+        Tdata = data[(lenNOAAchannel-lenNOAAtelemetry):lenNOAAchannel]
+        return (np.mean(Tdata),np.std(Tdata))
+    raise Exception("cqwx.APT._lineTelemetry(data): invalid data length "+\
+                    str(len(data)))
+
 def _pulseSSR(data, pulse):
     """ return sum of square residuals of data vs syncA and space data
         
@@ -399,6 +417,12 @@ class RX:
         """
         return [ np.sum(np.abs(np.diff(np.sign(s-np.mean(s))))/4) \
                  for s in np.split(self.signal, self.duration) ]
+
+    def printTelemetry(self):
+        data = getattr(self, 'fine_data', self.rough_data)
+        for line in data:
+            print ",".join(map(str,_lineTelemetry(line)))
+        
 
     def makePNG(self, fname, datasource):
         """create PNG file from decoded satellite image data
