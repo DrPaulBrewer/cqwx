@@ -52,12 +52,11 @@ def _fitAssq(data):
     return ssq
 
 def _G5(x):
-    """return copy of x as (len(x)/5) x 5 array, truncating remainder"""
+    """return copy of x as (len(x)/5) x 5 array"""
     l = len(x)
-    clip = 5*int(l/5)
-    groupsOf5 = np.copy(x[0:clip])
-    groupsOf5.shape=(clip/5,5)
-    return groupsOf5
+    if l%5!=0:
+        raise Exception("cqwx.APT._G5() input array size not divisible by 5")
+    return np.copy(x).reshape(l/5,5)
 
 def _findPulseConvolve2(data,pulse,maxerr=0):
     """return indexes of locations of binary pulse in binary data
@@ -251,8 +250,8 @@ class RX:
         length = 5*(lenNOAAsyncA+lenNOAAspace)
         if (len(self.signal)-start) < length:
             raise(Exception("findPhase: signal is of insufficient length"))
-        M = [ self._ssqA(start, phase) for phase in -3.14+0.01*np.arange(628) ]
-        phase = -3.14+0.01*np.argmin(M)
+        M = [ self._ssqA(start, phase) for phase in -1.57+0.01*np.arange(314) ]
+        phase = -1.57+0.01*np.argmin(M)
         return phase
 
     def _findJitterPhase(self, start):
