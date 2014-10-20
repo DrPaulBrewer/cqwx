@@ -37,18 +37,22 @@ import PIL
 # transmitted by NOAA-15, NOAA-18, and NOAA-19 satellites
 NOAAsyncA = np.concatenate( ([4*[0],7*[1,1,0,0],7*[0]]) )
 lNOAAsyncA = np.concatenate( (4*[11], 7*[244,244,11,11], 7*[11]) )
+lNOAAsyncB = np.concatenate( (4*[11], 7*[244,244,244,11,11]) )
 lenNOAAsyncA = len(NOAAsyncA)
 lenNOAAspace = 47
+lenNOAAimage = 909
+lenNOAAtelemetry = 45
+lenNOAAchannel = 1040
 lenNOAAline = 2080
 
-def _fitAssq(data):
+def _pulseSSR(data, pulse):
     """ return sum of square residuals of data vs syncA and space data
         
     """
-    dataFromSyncA = data[0:lenNOAAsyncA]
-    dataFromSpaceA = data[lenNOAAsyncA:(lenNOAAsyncA+lenNOAAspace)]
-    ssq = np.sum(np.square(dataFromSyncA-lNOAAsyncA))+\
-              lenNOAAspace*np.var(dataFromSpaceA)
+    dataFromSync = data[0:lenNOAAsyncA]
+    dataFromSpace = data[lenNOAAsyncA:(lenNOAAsyncA+lenNOAAspace)]
+    ssq = np.sum(np.square(dataFromSync-pulse))+\
+              lenNOAAspace*np.var(dataFromSpace)
     return ssq
 
 def _G5(x):
@@ -220,16 +224,16 @@ class RX:
             self.makePNG(pngfile, 'rough')
         return self.rough_data
 
-    def _ssqA(self, start, phase=None, denoise=True):
+    def _ssr(self, start, phase=None, denoise=True, pulse=None):
         length = 5*(lenNOAAsyncA+lenNOAAspace)
         raw = self._demodAM(start,\
                             start+length,\
                             phase,\
                             denoise)
         data = self._digitize(raw)
-        return _fitAssq(data)
+        return _pulseSSR(data, pulse)
 
-    def _findPhase(self, start):
+    def _findPhase(self, start, pulse=lNOAAsyncA):
         """return estimate of phase
         
         start: index to start of NOAA data line in self.signal
@@ -250,11 +254,12 @@ class RX:
         length = 5*(lenNOAAsyncA+lenNOAAspace)
         if (len(self.signal)-start) < length:
             raise(Exception("findPhase: signal is of insufficient length"))
-        M = [ self._ssqA(start, phase) for phase in -1.57+0.01*np.arange(314) ]
+        M = [ self._ssr(start, phase, pulse=pulse) for phase in \
+              -1.57+0.01*np.arange(314) ]
         phase = -1.57+0.01*np.argmin(M)
         return phase
 
-    def _findJitterPhase(self, start):
+    def _findJitterPhase(self, start, pulse=lNOAAsyncA):
         j0 = 0
         j1 = 0
         end = start+5*lenNOAAsyncA+5*lenNOAAspace
@@ -264,7 +269,8 @@ class RX:
             j1=2
         J = j0 + np.arange(1+j1-j0)
         Phases = [ self._findPhase(start+j) for j in J]
-        ssq = [ self._ssqA(start+j, Phases[i]) for (i,j) in enumerate(J) ]
+        ssq = [ self._ssr(start+j, Phases[i], pulse=pulse) \
+                for (i,j) in enumerate(J) ]
         argminssq = np.argmin(ssq)
         return (J[argminssq], Phases[argminssq])
 
