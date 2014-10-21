@@ -150,7 +150,7 @@ class RX:
         data[data>255]=255
         return data.astype(np.uint8)
 
-    def _demodAM(self, start=None, end=None, phase=None, denoise=False):
+    def _demodAM(self, start=None, end=None, phase=None, denoise=False, domega=0.0):
         """ return root-mean-square demodulated signal
 
         self.signal: input signal
@@ -187,7 +187,7 @@ class RX:
             demod = np.sqrt(0.4*ssq)
         else:
             sqcos = np.square(np.cos(\
-                (start+np.arange(end-start))*self.omega+phase\
+                (start+np.arange(end-start))*(self.omega+domega)+phase\
                                  ))
             divisor = np.sum(_G5(sqcos), axis=1)
             demod =  np.sqrt(np.divide(ssq, divisor))
@@ -242,12 +242,13 @@ class RX:
             self.makePNG(pngfile, 'rough')
         return self.rough_data
 
-    def _ssr(self, start, phase=None, denoise=True, pulse=None):
+    def _ssr(self, start, phase=None, denoise=True, pulse=None, domega=0.0):
         length = 5*(lenNOAAsyncA+lenNOAAspace)
         raw = self._demodAM(start,\
                             start+length,\
                             phase,\
-                            denoise)
+                            denoise,\
+                            domega)
         data = self._digitize(raw)
         return _pulseSSR(data, pulse)
 
@@ -277,6 +278,16 @@ class RX:
         phase = -1.57+0.01*np.argmin(M)
         return phase
 
+    def _findDOmega(self, start, phase, jitter=0):
+        domegas = (-1.57+0.01*np.arange(314))/lenNOAAchannel
+        M = [ self._ssr(start+lenNOAAchannel+jitter,\
+                        phase,\
+                        pulse=lNOAAsyncB,\
+                        domega=d) \
+              for d in domegas]
+        domega = domegas[np.argmin(M)]
+        return domega
+
     def _findJitterPhase(self, start, pulse=lNOAAsyncA):
         j0 = 0
         j1 = 0
@@ -303,7 +314,7 @@ class RX:
         synth = local_osc*np.repeat(demod,5)
         return self.signal[start:end]-synth
         
-    def fine_decode(self, repair=True, dejitter=True, pngfile=None, residuals=False):
+    def fine_decode(self, repair=True, dejitter=True, domega=False, pngfile=None, residuals=False):
         """ 
         extensive decoding of self.signal beginning with finding the 
         sync pulse in self.rough_data and using the pulse locations to
@@ -341,6 +352,7 @@ class RX:
         skipIdx = []
         self.fine_demod_jitter = []
         self.fine_demod_phase = []
+        self.fine_demod_domega = []
         if residuals:
             self.residuals = []
         else:
@@ -349,17 +361,22 @@ class RX:
             for k in range(0,delta/lenNOAAline):
                 start = 5*idx+5*k*lenNOAAline
                 end = start+5*lenNOAAline
+                deltaOmega = 0.0
                 if dejitter:
                     (jitter, phase)  = self._findJitterPhase(start)
                 else:
                     jitter = 0
                     phase = self._findPhase(start)
+                if domega:
+                    deltaOmega = self._findDOmega(start,phase,jitter=jitter)
                 self.fine_demod_jitter.append(jitter)
                 self.fine_demod_phase.append(phase)
+                self.fine_demod_domega.append(deltaOmega)
                 raw = self._demodAM(start+jitter,\
                                         end+jitter,\
                                         phase,\
-                                    denoise=True)
+                                    denoise=True, \
+                                    domega=deltaOmega)
                 if residuals:
                     self.residuals.append(self._residual(start+jitter,\
                                                          end+jitter,\
@@ -487,7 +504,7 @@ if __name__== "__main__":
     if len(sys.argv)>=3:
         rx.rough_decode(pngfile=sys.argv[2])
     if len(sys.argv)>=4:
-        rx.fine_decode(pngfile=sys.argv[3])
+        rx.fine_decode(pngfile=sys.argv[3], dejitter=True, domega=True)
 
 
 
