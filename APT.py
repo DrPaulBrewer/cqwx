@@ -279,7 +279,7 @@ class RX:
         return phase
 
     def _findDOmega(self, start, phase, jitter=0):
-        domegas = (-1.57+0.01*np.arange(314))/lenNOAAchannel
+        domegas = (-1.57+0.01*np.arange(314))/(5*lenNOAAchannel)
         M = [ self._ssr(start+lenNOAAchannel+jitter,\
                         phase,\
                         pulse=lNOAAsyncB,\
