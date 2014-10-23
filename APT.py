@@ -31,6 +31,7 @@ import math
 import sys
 import numpy as np
 import scipy.io.wavfile
+import scipy.signal
 import PIL
 
 # these are the NOAA parameters for NOAA APT 
@@ -151,46 +152,17 @@ class RX:
         data[data>255]=255
         return data.astype(np.uint8)
 
-    def _demodAM_by_FFT(self, start=None, end=None, warn=True, minpower2=15):
-        if start is None:
-            start = 0
-        if end is None:
-            end = len(self.signal)
-        # find a power of 2 that encloses the sample, then go up another power
-        # minimum window of 2^15 = 32768
-        power2 = max(minpower2, 1+math.ceil(math.log(end-start)/math.log(2.0)))
-        fftsize = 2**power2
-        binNOAACarrier = math.floor(fNOAACarrierHz*fftsize/self.rate)
-        padding = fftsize-(end-start)
-        padl = padding/2
-        padr = padding-padl
-        sample = np.concatenate( (np.zeros(padl, np.float),\
-                                  self.signal[start:end],\
-                                  np.zeros(padr, np.float)) )
-        sample_fft = np.fft.rfft(sample)
-        high_bin = np.argmax(np.abs(sample_fft))
-        if warn:
-            if high_bin!=binNOAACarrier:
-                print "warning: in _demodAM_by_FFT unexpected fft peak"
-                print " peak occurs in bin ",high_bin
-                print " expected carrier in bin ",binNOAACarrier
-            else:
-                print "fft peak as expected"
-        cutoff = binNOAACarrier
-        demod_fft = np.concatenate( (np.copy(sample_fft[cutoff:]),\
-                                     np.zeros(cutoff, np.complex) ) )
-        demod_fft[0] = 0.0
-        demod = np.fft.irfft(demod_fft)[padl:(padl+end-start)]
-        demod5 =_G5(demod)
-        demod5x2 = demod5[:,2]
-        return demod5x2
+    def _demodAM_by_hilbert(self, start, end):
+        # see http://dsp.stackexchange.com/a/18800/11065
+        hilbert = scipy.signal.hilbert(self.signal[start:end])
+        return _G5(np.abs(hilbert))[:,2]
 
-    def _data_from_fft(self, minpower2=15):
+    def _data_from_hilbert(self):
         data = np.array([ \
                           self._digitize(\
-                                self._demodAM_by_FFT(j*5*lenNOAAline,\
-                                                 (j+1)*5*lenNOAAline,\
-                                         minpower2=minpower2),\
+                                self._demodAM_by_hilbert(j*5*lenNOAAline,\
+                                                 (j+1)*5*lenNOAAline\
+                                         ),\
                                     plow=10.0,
                                     phigh=90.0 )\
                           for j in range(len(self.signal)/(5*lenNOAAline)) ])
