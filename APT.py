@@ -44,6 +44,7 @@ lenNOAAimage = 909
 lenNOAAtelemetry = 45
 lenNOAAchannel = 1040
 lenNOAAline = 2080
+fNOAACarrierHz = 2400.0
 
 def _lineTelemetry(data):
     """ return mean and sdev of telemetry portions of single line data
@@ -114,8 +115,8 @@ class RX:
         """ 
         self.rate = 20800 
         # we require 5 samples of the signal per APT data byte
-        # 5 samples/byte*2040 bytes/line*2 APTlines/sec = 20400
-        self.omega = 2*math.pi*2400.0/self.rate  
+        # 5 samples/byte*2080 bytes/line*2 APTlines/sec = 20800
+        self.omega = 2*math.pi*fNOAACarrierHz/self.rate
         # omega = subcarrier phase change per sample
         if signal is not None:
             self.signal = signal
@@ -150,6 +151,51 @@ class RX:
         data[data>255]=255
         return data.astype(np.uint8)
 
+    def _demodAM_by_FFT(self, start=None, end=None, warn=True, minpower2=15):
+        if start is None:
+            start = 0
+        if end is None:
+            end = len(self.signal)
+        # find a power of 2 that encloses the sample, then go up another power
+        # minimum window of 2^15 = 32768
+        power2 = max(minpower2, 1+math.ceil(math.log(end-start)/math.log(2.0)))
+        fftsize = 2**power2
+        binNOAACarrier = math.floor(fNOAACarrierHz*fftsize/self.rate)
+        padding = fftsize-(end-start)
+        padl = padding/2
+        padr = padding-padl
+        sample = np.concatenate( (np.zeros(padl, np.float),\
+                                  self.signal[start:end],\
+                                  np.zeros(padr, np.float)) )
+        sample_fft = np.fft.rfft(sample)
+        high_bin = np.argmax(np.abs(sample_fft))
+        if warn:
+            if high_bin!=binNOAACarrier:
+                print "warning: in _demodAM_by_FFT unexpected fft peak"
+                print " peak occurs in bin ",high_bin
+                print " expected carrier in bin ",binNOAACarrier
+            else:
+                print "fft peak as expected"
+        cutoff = binNOAACarrier
+        demod_fft = np.concatenate( (np.copy(sample_fft[cutoff:]),\
+                                     np.zeros(cutoff, np.complex) ) )
+        demod_fft[0] = 0.0
+        demod = np.fft.irfft(demod_fft)[padl:(padl+end-start)]
+        demod5 =_G5(demod)
+        demod5x2 = demod5[:,2]
+        return demod5x2
+
+    def _data_from_fft(self, minpower2=15):
+        data = np.array([ \
+                          self._digitize(\
+                                self._demodAM_by_FFT(j*5*lenNOAAline,\
+                                                 (j+1)*5*lenNOAAline,\
+                                         minpower2=minpower2),\
+                                    plow=10.0,
+                                    phigh=90.0 )\
+                          for j in range(len(self.signal)/(5*lenNOAAline)) ])
+        return data.astype('uint8')
+
     def _demodAM(self, start=None, end=None, phase=None, denoise=False, domega=0.0):
         """ return root-mean-square demodulated signal
 
@@ -169,9 +215,9 @@ class RX:
         data AM modulated in the carrier tone. As omega is about 41 degrees
         per sample, a group of 5 samples encompasses 205 degrees or about
         half a wave.  Squaring the samples amd summing has undesirable effects
-        of summing squared noise, and also creating additional noise at 
+        of summing squared noise, and also creating a suprious noise signal at 
         twice omega, but that is summing over roughly an entire wave, and an 
-        entire wave usually sums near zero.
+        entire wave might sum the spurious signal "near" zero.
         
         """
         denoiseAmt = 0.0
@@ -469,7 +515,7 @@ class RX:
 def _NOAA_test_signal(minmod=0.05,maxmod=0.95,phase=0,domega=0,e=0,data=None):
     """return simulated NOAA signal with syncA pulse, space, and random data
     
-    return length is 10200 byytes, equivalent to one NOAA line
+    return length is 10400 byytes, equivalent to one NOAA line
     
     does not simulate syncB, spaceB, or telemetry bars.
     
@@ -482,6 +528,8 @@ def _NOAA_test_signal(minmod=0.05,maxmod=0.95,phase=0,domega=0,e=0,data=None):
           data may be specified for the non-syncA, non-space content
     
     """
+    rate = 10.0*lenNOAAline
+    omega = 2*math.pi*fNOAACarrierHz/rate
     space = np.repeat(255*np.random.random_integers(0,1,1), lenNOAAspace)
     ldata = lenNOAAline-len(lNOAAsyncA)-lenNOAAspace
     if data is None:
@@ -492,8 +540,8 @@ def _NOAA_test_signal(minmod=0.05,maxmod=0.95,phase=0,domega=0,e=0,data=None):
         message = data
     linedata = np.concatenate( (lNOAAsyncA, space, message) )
     modulation = minmod+(maxmod-minmod)*np.repeat(linedata,5)/255.0
-    signal = modulation*np.cos((omega+domega)*np.arange(5*2040)+phase)+\
-        e*np.random.normal(0.0,1.0,5*2040)
+    signal = modulation*np.cos((omega+domega)*np.arange(5*lenNOAAline)+phase)+\
+        e*np.random.normal(0.0,1.0,5*lenNOAAline)
     return (signal, linedata)
 
 
