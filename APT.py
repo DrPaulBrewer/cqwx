@@ -45,6 +45,7 @@ lenNOAAimage = 909
 lenNOAAtelemetry = 45
 lenNOAAchannel = 1040
 lenNOAAline = 2080
+lenNOAAframe = 64*lenNOAAline
 fNOAACarrierHz = 2400.0
 
 def _lineTelemetry(data):
@@ -152,23 +153,19 @@ class RX:
         data[data>255]=255
         return data.astype(np.uint8)
 
-    def _demodAM_by_hilbert(self, start, end):
+    def _demodAM_by_hilbert(self, start=0, end=None):
         # see http://dsp.stackexchange.com/a/18800/11065
+        if end is None:
+            end = len(self.signal)
+        end = min(end, len(self.signal))
         hilbert = scipy.signal.hilbert(self.signal[start:end])
-        return _G5(np.abs(hilbert))[:,2]
+        filtered = scipy.signal.medfilt(np.abs(hilbert), 5)
+        return _G5(filtered)[:,2]
 
     def _data_from_hilbert(self):
-        data = np.array([ \
-                          self._digitize(\
-                                self._demodAM_by_hilbert(j*5*lenNOAAline,\
-                                                 (j+1)*5*lenNOAAline\
-                                         ),\
-                                    plow=10.0,
-                                    phigh=90.0 )\
-                          for j in range(len(self.signal)/(5*lenNOAAline)) ])
-        return data.astype('uint8')
+        return self._digitize(self._demodAM_by_hilbert(), plow=1.0, phigh=99.0)
 
-    def _demodAM(self, start=None, end=None, phase=None, denoise=False, domega=0.0):
+    def _demodAMrms(self, start=None, end=None, phase=None, denoise=False, domega=0.0):
         """ return root-mean-square demodulated signal
 
         self.signal: input signal
@@ -226,13 +223,8 @@ class RX:
         
         for f in self.filters:
             f()
-        raw = self._demodAM()
-        # do digitization line by line
-        # to reduce impact of demodulated noise spikes on digitization
-        self.rough_data = np.concatenate(\
-            [self._digitize(ldata) \
-             for ldata in np.split(raw, len(raw)/lenNOAAline)]\
-        )
+
+        self.rough_data = self._data_from_hilbert()
 
         hldata = 0+np.ravel(self.rough_data>127)
         self.As = _findPulseConvolve2(hldata,NOAAsyncA,1)
@@ -332,95 +324,6 @@ class RX:
         synth = local_osc*np.repeat(demod,5)
         return self.signal[start:end]-synth
         
-    def fine_decode(self, repair=True, dejitter=True, domega=False, pngfile=None, residuals=False):
-        """ 
-        extensive decoding of self.signal beginning with finding the 
-        sync pulse in self.rough_data and using the pulse locations to
-        guide the estimation of signal phase and demodulation with a 
-        least-squares method in self._fine_demod
-        
-        create self.fine_data containing satellite image data and returns
-        data to caller.  Generate pngfile if requested.
-                
-        rows of self.fine_data are synchronized to satellite sync-A pulses
-
-        create diagnostic arrays with one entry per decoded data line:
-           self.fine_demod_phase:  phase of 2400hz carrier, from space A
-               The reference time of this phase is self.signal[0]
-           self.fine_demod_jitter: if dejitter, the index offset, else 0
-           self.fine_demod_space_amp:  mean amplitude of the carrier in space A
-        
-        repair: (True) replace missing/mis-synced line with average of lines above and below
-        dejitter: (False) test and correct for misalignment of signal samples 
-        once at each line, using goodness-of-fit of sync pulses (TO DO)
-        
-        pngfile: (optional) file name to output decoded PNG image from satellite
-        
-        """
-        if self.rough_data is None:
-            self.rough_decode()
-        # Use rough data to find syncA pulses 
-        # and align fine demodulation efforts around these pulses.
-        # If pulses show up in odd places, mark line and postprocess.
-        # The known portions of the signal (syncA, spaceA) are used to estimate
-        # phase and sample jitter for the demodulator.
-        triplets = np.concatenate( (self.As[0:-1], self.dAs, self.breaks) )
-        triplets.shape=(3, len(self.dAs))
-        lineData = []
-        skipIdx = []
-        self.fine_demod_jitter = []
-        self.fine_demod_phase = []
-        self.fine_demod_domega = []
-        if residuals:
-            self.residuals = []
-        else:
-            self.residuals = None
-        for (idx, delta, skipline) in triplets.T:
-            for k in range(0,delta/lenNOAAline):
-                start = 5*idx+5*k*lenNOAAline
-                end = start+5*lenNOAAline
-                deltaOmega = 0.0
-                if dejitter:
-                    (jitter, phase)  = self._findJitterPhase(start)
-                else:
-                    jitter = 0
-                    phase = self._findPhase(start)
-                if domega:
-                    deltaOmega = self._findDOmega(start,phase,jitter=jitter)
-                self.fine_demod_jitter.append(jitter)
-                self.fine_demod_phase.append(phase)
-                self.fine_demod_domega.append(deltaOmega)
-                raw = self._demodAM(start+jitter,\
-                                        end+jitter,\
-                                        phase,\
-                                    denoise=True, \
-                                    domega=deltaOmega)
-                if residuals:
-                    self.residuals.append(self._residual(start+jitter,\
-                                                         end+jitter,\
-                                                         phase,\
-                                                         raw))
-                line = self._digitize(raw)
-                lineData.append(line)
-            if skipline:
-                lineData.append(127+np.zeros(lenNOAAline, dtype='uint8'))
-                skipIdx.append(len(lineData)-1)
-        if repair:
-            for idx in skipIdx:
-                if (idx<len(lineData)-2):
-                    lineData[idx] = lineData[idx-1]/2+lineData[idx+1]/2
-        self.fine_data = np.array(lineData)
-        if pngfile is not None:
-            self.makePNG(pngfile, 'fine')
-        if type(residuals)==type('string'):
-            r = np.array(self.residuals)
-            r.shape = r.shape[0]*r.shape[1]
-            scipy.io.wavfile.write(residuals,\
-                                   self.rate,\
-                                   np.round(r).astype('int16'))
-        return self.fine_data
-
-
     def _dcfilter(self):
         """modify self.signal to filter out DC-1Hz
         subtracts mean from each one second grouping of self.signal
@@ -523,8 +426,7 @@ if __name__== "__main__":
     rx = RX(sys.argv[1])
     if len(sys.argv)>=3:
         rx.rough_decode(pngfile=sys.argv[2])
-    if len(sys.argv)>=4:
-        rx.fine_decode(pngfile=sys.argv[3], dejitter=True, domega=True)
+
 
 
 
